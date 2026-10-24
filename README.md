@@ -252,13 +252,22 @@ Agency detection is the compounding one. Almost every agency credits itself in t
 
 ### 3. ENRICH — who decides
 
-Free public registries first. Name plus title from the team page, confirmed against an authoritative registry where one exists — which also filters out your own parsing artifacts, because a "person" who matches nothing usually wasn't one.
+The owner, from the company's own site. Harvey reads the homepage and follows the site's own menu to the pages where people are named — team, about, our story, meet the dentists, attorneys, contact — six pages at most, skipping links that land back on the homepage. On those pages it reads:
 
-When a company's site names nobody and Harvey has no contact there yet — common for small trades — it falls back to a general address the company prints on its own homepage or contact page (only general mailboxes such as `owner@`, `office@`, `info@` or `hello@`, never a person's own address). It is never guessed, it is verified like any other address, and those emails greet the company's team instead of a first name.
+- **cards and lists**: a name with a title under it, even when the title is only a `<br>` away inside a span;
+- **sentences**: "owned and operated by Mike Jones", "led today by President Rami Zarifa", "Uku Taht started Plausible";
+- **schema.org**: the business's own `founder` and `employee` entries (a blog post's author is not staff);
+- **the name on the door**: a dentist or attorney whose surname is in the business name is treated as the owner.
+
+Owners rank first, and at most two people per company become prospects. Headings made of ordinary words ("Team of Experts"), customers quoted in testimonials or tweets ("Founder at Paperbell"), and taglines are not people. Titles match your ICP by whole word: "Vice President" doesn't count as "President" unless you list it, and Proprietor, Principal, Managing Partner, Founder and CEO all count as an owner. With `LIKELY_OWNER` confirmed, each owner is recorded as an observation with the evidence that says so.
+
+When a company's site names nobody, or names an owner whose address is only a guess, and Harvey has no contact there yet — common for small trades — it also uses a general address the company prints on its own pages (only general mailboxes such as `owner@`, `office@`, `info@` or `hello@`, never a person's own address). Harvey reads whole pages for it, including schema.org and addresses hidden from scrapers, and accepts an address on another domain only when that domain leads to the company's own site. It is never guessed, it is verified like any other address, and those emails greet the company's team instead of a first name.
+
+A site behind a bot challenge (SiteGround's "sgcaptcha", Cloudflare's "Just a moment…") is reported as challenged, not unreachable, and isn't retried.
 
 ### 4. VERIFY — can you reach them
 
-Harvey learns each company's **address pattern** and verifies one candidate, rather than brute-forcing name variations. Raw SMTP probing is not viable from a laptop — outbound port 25 is usually blocked, and Google Workspace and Microsoft 365 accept everything from an unknown IP.
+Harvey learns each company's **address pattern** and verifies one candidate, rather than brute-forcing name variations. Any address the site publishes teaches it: `tbrown@` next to Tim Brown is `{first initial}{last}`, and untied ones still count (`brynn@` and `mandie@` mean first names, `jsmith@` an initial and surname). It decodes the usual hiding tricks (Cloudflare email protection, `data-` attribute pairs, `name [at] domain [dot] com`), and a person's own published address is used as is. With no evidence at all, a small business is guessed as `first@`, and that cached guess never stops a real address or a Hunter lookup from replacing it. Raw SMTP probing is not viable from a laptop — outbound port 25 is usually blocked, and Google Workspace and Microsoft 365 accept everything from an unknown IP.
 
 Every address is tagged honestly: `verified` / `risky` (catch-all) / `guess` / `invalid`. **Only deliverable ones are ever sent to.** A guess is never treated as a win.
 
