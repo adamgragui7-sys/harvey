@@ -60,16 +60,20 @@ minor versions can still change behaviour.
   meet-the-doctors or attorneys pages (six pages at most), instead of
   guessing nine fixed paths and stopping at the first that answered. Owners
   are read from team cards, sentences ("owned and operated by…"),
-  schema.org founders and a surname in the business name, and rank first;
+  and schema.org founders, and rank first (a surname in the business name
+  only breaks a tie between owners);
   at most two people per company become prospects. ICP titles match by
   whole word, with owner synonyms (Proprietor, Principal, Managing Partner,
   Founder, CEO). With `LIKELY_OWNER` confirmed, each owner is recorded with
   its evidence.
-- **Email patterns come from every address a site publishes**, including
-  first-name (`brent@`) and initial-plus-surname (`jsmith@`) ones and
-  addresses hidden behind Cloudflare email protection or `data-` attributes.
-  A named person's own published address is used as is. With no evidence,
-  small businesses are guessed as `first@`. Every address is still graded
+- **Email patterns come from the addresses a site publishes**, including
+  ones hidden behind Cloudflare email protection or a mail link's `data-`
+  attributes, matched to the people the site names. A lone ambiguous
+  address (`jadams@`) teaches nothing, and an address another named person
+  could own (`jsmith@` with both John and Jane Smith there) is never guessed
+  for anyone. A named person's own published address is used as is. With no
+  evidence, a company known to be small (ICP company size, or a
+  local-business listing) is guessed as `first@`, others as `first.last@`. Every address is still graded
   verified / risky / guess / invalid, and only verified or risky ones are
   ever sent.
 - **Gmail reads only what's new.** After the first complete read of the
