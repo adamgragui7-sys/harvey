@@ -54,6 +54,13 @@ PATTERN_BUILDERS = {
     "{l}{fi}": lambda f, l: f"{l}{f[0]}",
 }
 DEFAULT_PATTERN = "{f}.{l}"
+# A business with a handful of people and no evidence of its format: the
+# owner of a five-person roofing company is jim@, far more often than
+# jim.smith@. Still only a guess — never sent until a verifier confirms it.
+SMALL_BUSINESS_PATTERN = "{f}"
+# Pattern-cache sources that are only a fallback, not evidence. A cached
+# default never blocks a known address or a Hunter lookup.
+DEFAULT_SOURCES = ("default", "default_after_hunter")
 
 
 @dataclass
@@ -172,6 +179,98 @@ def infer_pattern_from_email(email: str, first: str, last: str) -> Optional[str]
         except IndexError:
             continue
     return None
+
+
+# Mailboxes that are a function, not a person: they never reveal how the
+# business spells its people's addresses.
+ROLE_LOCALS = frozenset("""
+info office contact contactus hello hi team admin administrator support help sales
+service services estimates estimate quotes quote inquiries inquiry enquiries enquiry
+billing accounts accounting accountspayable ap ar invoices payments orders order
+careers career jobs job hr recruiting employment apply marketing media press pr news
+newsletter webmaster web website postmaster hostmaster abuse noreply no-reply donotreply
+reception frontdesk front appointments appointment schedule scheduling dispatch
+customerservice customercare care clients client mail email general main owner
+manager management operations ops legal privacy compliance security it tech
+feedback reviews referrals warranty claims insurance parts shop store
+""".split())
+# Two leading consonants that begin English given names (br-ent, ch-ris,
+# st-eve). A local part that starts with any OTHER consonant pair is almost
+# always an initial plus a surname: jsmith, mconnell, wgelb.
+_NAME_ONSETS = frozenset("""
+bl br ch cl cr dr dw fl fr gl gr gw kh kl kr ph pl pr qu rh sc sh sk sl sm sn sp st
+sw th tr tw ts wh wr zh zl ty sy ly ky my ry ny dy
+""".split())
+_VOWELS = set("aeiouy")
+
+
+def pattern_from_local(local: str) -> Optional[tuple[str, float]]:
+    """The likely pattern behind one published address when nobody on the
+    site is tied to it: brent@ -> {f}, jsmith@ -> {fi}{l}, j.smith@ ->
+    {fi}.{l}, john.smith@ -> {f}.{l}. None for role mailboxes and junk.
+
+    The confidence is deliberately modest; an address tied to a named
+    person (infer_pattern_from_email) is the stronger evidence.
+    """
+    local = (local or "").strip().lower()
+    if not local or local in ROLE_LOCALS or any(ch.isdigit() for ch in local):
+        return None
+    m = re.fullmatch(r"([a-z]+)([._-])([a-z]+)", local)
+    if m:
+        first, sep, last = m.groups()
+        if sep == "." and len(first) == 1 and len(last) >= 2:
+            return "{fi}.{l}", 0.6
+        if len(first) >= 2 and len(last) >= 2 and first not in ROLE_LOCALS and last not in ROLE_LOCALS:
+            return {".": "{f}.{l}", "_": "{f}_{l}", "-": "{f}-{l}"}[sep], 0.6
+        return None
+    if not re.fullmatch(r"[a-z]{2,11}", local):
+        return None
+    if local[0] not in _VOWELS and local[1] not in _VOWELS and local[:2] not in _NAME_ONSETS:
+        return "{fi}{l}", 0.55
+    return "{f}", 0.55
+
+
+def site_email_evidence(
+    addresses: list[str], people: list[tuple[str, str]], domain: str,
+) -> tuple[list[tuple[str, str, str]], str, float]:
+    """What a site's own published addresses say about its email format.
+
+    Returns (known, pattern, confidence): ``known`` is every on-domain
+    address that belongs to a named person on the site (tbrown@ for Tim
+    Brown), ready for find_email(known_emails=...). ``pattern`` is the
+    format those addresses agree on; failing that, the majority format of
+    the untied personal addresses (brynn@, mandie@ -> {f}); else "".
+    """
+    domain = _clean_domain(domain)
+    known: list[tuple[str, str, str]] = []
+    tied_votes: dict[str, int] = {}
+    loose_votes: dict[str, int] = {}
+    for addr in addresses or []:
+        addr = (addr or "").strip().lower()
+        local, _, adomain = addr.partition("@")
+        if adomain != domain or local in ROLE_LOCALS:
+            continue
+        owner = None
+        for first, last in people or []:
+            pattern = infer_pattern_from_email(addr, first, last)
+            if pattern:
+                owner = (first, last, pattern)
+                break
+        if owner:
+            known.append((addr, owner[0], owner[1]))
+            tied_votes[owner[2]] = tied_votes.get(owner[2], 0) + 1
+            continue
+        guess = pattern_from_local(local)
+        if guess:
+            loose_votes[guess[0]] = loose_votes.get(guess[0], 0) + 1
+    if tied_votes:
+        pattern = max(tied_votes, key=tied_votes.get)
+        return known, pattern, 0.95 if tied_votes[pattern] >= 2 else 0.9
+    if loose_votes:
+        pattern = max(loose_votes, key=loose_votes.get)
+        n = loose_votes[pattern]
+        return known, pattern, min(0.55 + 0.05 * n, 0.7)
+    return known, "", 0.0
 
 
 async def _hunter_domain_pattern(domain: str, api_key: str) -> Optional[tuple[str, float]]:
@@ -315,22 +414,18 @@ async def derive_pattern(
     domain: str,
     known_emails: Optional[list[tuple[str, str, str]]] = None,
     state=None,
+    default_pattern: str = DEFAULT_PATTERN,
 ) -> tuple[str, str, float]:
     """Determine a domain's email pattern. Returns (pattern, source, confidence).
 
-    Order: DB cache → a known address for this domain (scraped mailto,
-    GitHub, etc.) → Hunter domain-search → default. This is the step that
-    collapses six guesses to one and is where free tiers stretch furthest.
+    Order: a known address for this domain (a named person's address on
+    the site) → the DB cache, unless all it holds is a default → Hunter
+    domain-search (once per domain) → ``default_pattern``. This is the step
+    that collapses six guesses to one and is where free tiers stretch
+    furthest. A cached default is a fallback, not evidence: it never blocks
+    a real address or Hunter (it used to, forever).
     """
     domain = _clean_domain(domain)
-
-    if state is not None:
-        try:
-            cached = await state.get_email_pattern(domain)
-            if cached and cached.get("pattern"):
-                return cached["pattern"], cached.get("source", "cache"), cached.get("confidence", 0.6)
-        except Exception as e:
-            logger.debug(f"Pattern cache read failed for {domain}: {e}")
 
     # A confirmed address for this domain reveals the pattern for free.
     for email, first, last in known_emails or []:
@@ -339,14 +434,26 @@ async def derive_pattern(
             if inferred:
                 return inferred, "known_email", 0.9
 
+    cached = None
+    if state is not None:
+        try:
+            cached = await state.get_email_pattern(domain)
+        except Exception as e:
+            logger.debug(f"Pattern cache read failed for {domain}: {e}")
+    if cached and cached.get("pattern") and cached.get("source") not in DEFAULT_SOURCES:
+        return cached["pattern"], cached.get("source", "cache"), cached.get("confidence", 0.6)
+
+    hunter_tried = bool(cached and cached.get("source") == "default_after_hunter")
     key = _hunter_api_key()
-    if key and await hunter_searches_remaining(state) > 0:
+    if key and not hunter_tried and await hunter_searches_remaining(state) > 0:
         await record_hunter_search(state)
         result = await _hunter_domain_pattern(domain, key)
         if result:
             return result[0], "hunter_domain_search", result[1]
+        # Remembered, so the monthly budget isn't spent on this domain again.
+        return default_pattern, "default_after_hunter", 0.3
 
-    return DEFAULT_PATTERN, "default", 0.3
+    return default_pattern, cached.get("source", "default") if hunter_tried else "default", 0.3
 
 
 # ── Verification channels ──
@@ -583,12 +690,15 @@ async def find_email(
     env=None,
     state=None,
     known_emails: Optional[list[tuple[str, str, str]]] = None,
+    default_pattern: str = DEFAULT_PATTERN,
 ) -> EmailResult:
     """Find and honestly grade one email for a person at a company.
 
     Returns an EmailResult whose ``status`` is verified / risky / guess /
     invalid. When ``verify`` is False (or no verifier is configured), the
-    best pattern guess is returned as ``guess`` — never as verified.
+    best pattern guess is returned as ``guess`` — never as verified. A
+    person's own published address (in ``known_emails``) is used as is,
+    and is still graded like any other.
     """
     domain = _clean_domain(domain)
     if not (first_name and last_name and domain):
@@ -603,9 +713,16 @@ async def find_email(
     mx_type = classify_mx(mx_host)
 
     pattern, source, confidence = await derive_pattern(
-        domain, known_emails=known_emails, state=state
+        domain, known_emails=known_emails, state=state, default_pattern=default_pattern,
     )
     candidate = build_email(pattern, first_name, last_name, domain)
+    own = _clean_name_part(first_name), _clean_name_part(last_name)
+    for email, first, last in known_emails or []:
+        if (_clean_name_part(first), _clean_name_part(last)) == own \
+                and email.split("@")[-1].lower() == domain:
+            candidate = email.strip().lower()
+            pattern = infer_pattern_from_email(candidate, first, last) or pattern
+            break
     if not candidate:
         candidate = build_email(DEFAULT_PATTERN, first_name, last_name, domain)
         pattern = DEFAULT_PATTERN
