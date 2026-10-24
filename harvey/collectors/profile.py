@@ -230,14 +230,14 @@ _BLOCK_MARKERS = (
     "/.well-known/sgcaptcha",       # SiteGround's bot challenge (served as a 202)
     "cf-chl-", "cf_chl_opt",        # Cloudflare's interstitial
     "px-captcha",                   # PerimeterX / HUMAN
-    "_incapsula_resource",
+    "_incapsula_resource", "incapsula incident id",
     "sucuri website firewall",
 )
 _BLOCK_TITLES = (
     "just a moment", "attention required", "access denied",
     "access to this page has been denied", "are you a robot", "security check",
     "verify you are human", "human verification", "bot verification",
-    "ddos protection", "one more step",
+    "ddos protection", "ddos-guard", "one more step",
 )
 _WEAK_BLOCK_MARKERS = (
     "captcha", "are you a robot", "verify you are human", "access denied",
@@ -246,10 +246,11 @@ _WEAK_BLOCK_MARKERS = (
 
 
 
-def looks_like_challenge(text: str) -> bool:
+def looks_like_challenge(text: str, status: int = 200) -> bool:
     """A bot challenge or block page — not a real page that happens to load
     reCAPTCHA for its contact form (which used to read as "blocked" and
-    cost Harvey the whole site)."""
+    cost Harvey the whole site). Ordinary words ("access denied", "protected
+    by reCAPTCHA") only count on a short page served as an error or 202."""
     if not text:
         return False
     head = text[:6000]
@@ -259,7 +260,7 @@ def looks_like_challenge(text: str) -> bool:
     title = re.search(r"(?is)<title[^>]*>(.*?)</title>", head)
     if title and any(t in title.group(1).strip().lower() for t in _BLOCK_TITLES):
         return True
-    if len(text) < 15000:
+    if status in (202, 403, 429, 503) and len(text) < 15000:
         visible = re.sub(r"(?s)<[^>]+>", " ", _strip_code(text)).lower()
         return any(marker in visible for marker in _WEAK_BLOCK_MARKERS)
     return False
@@ -452,7 +453,8 @@ class ProfileCollector:
         except (httpx.HTTPError, ValueError) as e:
             logger.debug(f"fetch failed {url}: {e}")
             return ""
-        if resp.status_code in (200, 202, 403, 429, 503) and looks_like_challenge(resp.text or ""):
+        if resp.status_code in (200, 202, 403, 429, 503) and looks_like_challenge(
+                resp.text or "", resp.status_code):
             self.challenged.add(urlparse(url).netloc.lower().removeprefix("www."))
             return ""
         if resp.status_code != 200:

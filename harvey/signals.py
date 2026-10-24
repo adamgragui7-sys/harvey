@@ -262,9 +262,9 @@ SIGNAL_CATALOG: list[dict] = [
         "label": "Likely the owner",
         "description": (
             "The company's own website says this person owns or founded it: an "
-            "Owner/Founder/President title, a sentence like 'owned and operated by', "
-            "a schema.org founder, or their surname in the business name ('Connell & "
-            "Gelb', 'Rosenberry Family Dental'). The evidence is kept with the fact."
+            "Owner/Founder/President title, a sentence like 'owned and operated by' "
+            "or a schema.org founder. Former, retired and late owners don't count. "
+            "The evidence is kept with the fact."
         ),
         "category": "people",
         "value_type": "bool",

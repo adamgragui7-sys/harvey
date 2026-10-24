@@ -50,6 +50,8 @@ realty realtors consulting consultants capital ventures holdings enterprises ind
 technologies technology media studio studios labs agency digital creative analytics
 software sports medicine fitness salon spa dental medical clinic insurance financial
 properties inc llc pllc ltd corp co
+coach pastor father mother judge mayor senator governor captain sergeant sheriff officer
+uncle aunt grandpa grandma mom dad memory memoriam late former
 """.split())
 
 # Particles that sit lower-case inside a surname ("Van de Rydt", "de la Cruz").
@@ -140,9 +142,16 @@ _PROFESSIONAL = re.compile(
 _PARTNER_ONLY = re.compile(r"^(?:senior |founding |managing |name |equity )?partner\b", re.I)
 
 
+# Someone who used to own or run it: "Former Owner", "Past President",
+# "Retired President", "Founder (1952-2001)", "the late", "Emeritus".
+_FORMER = re.compile(
+    r"(?i)\b(?:former|formerly|past|retired|late|emerit(?:us|a)|deceased|in memory|memoriam|"
+    r"ex-|one-time|onetime)\b|\b(?:1[89]|20)\d{2}\s*[-–—]\s*(?:1[89]|20)\d{2}\b")
+
+
 def is_owner_title(title: str) -> bool:
     title = (title or "").strip()
-    if not title or _SUBORDINATE.search(title):
+    if not title or _SUBORDINATE.search(title) or _FORMER.search(title):
         return False
     return bool(_OWNER_TITLE.search(title) or _PARTNER_ONLY.match(title))
 
@@ -169,7 +178,7 @@ def title_matches(title: str, targets, owner: bool = False) -> bool:
     """
     title = (title or "").strip()
     targets = [t.strip().lower() for t in (targets or []) if t and t.strip()]
-    if not targets:
+    if not targets or _FORMER.search(title):
         return False
     owner_targets = [t for t in targets if t in _OWNER_FAMILY or t == "partner"]
     if owner_targets and (owner or is_owner_title(title)):
@@ -284,18 +293,22 @@ _VOID_TAGS = frozenset("img input br hr meta link source area col embed wbr trac
 MAX_QUOTE_CHARS = 8000
 
 
+MAX_QUOTES = 200
+
+
 def _close_of(html: str, start: int, tag: str) -> int:
-    """Index just past the element opened at ``start`` (same-tag depth count)."""
+    """Index just past the element opened at ``start`` (same-tag depth
+    count), looking no further than MAX_QUOTE_CHARS ahead; ``start`` when it
+    doesn't close within that window."""
     depth, pos = 0, start
-    pattern = re.compile(rf"(?i)<(/?){tag}\b[^>]*?(/?)>")
-    for m in pattern.finditer(html, start):
+    pattern = re.compile(rf"(?i)<(/?){re.escape(tag)}\b[^>]*?(/?)>")
+    for m in pattern.finditer(html, start, min(len(html), start + MAX_QUOTE_CHARS)):
         if m.group(2):          # self-closing
             continue
         depth += -1 if m.group(1) else 1
         if depth == 0:
             return m.end()
-        pos = m.end()
-    return pos
+    return start
 
 
 def drop_quoted(html: str) -> str:
@@ -304,17 +317,19 @@ def drop_quoted(html: str) -> str:
     the business's own staff."""
     html = _STATUS_LINK.sub(" ", html or "")
     out, pos = [], 0
-    for m in _QUOTED_CLASS.finditer(html):
+    for n, m in enumerate(_QUOTED_CLASS.finditer(html)):
+        if n >= MAX_QUOTES:
+            break
         if m.start() < pos or m.group(1).lower() in _VOID_TAGS:
             continue
         end = _close_of(html, m.start(), m.group(1))
-        if end - m.start() > MAX_QUOTE_CHARS:
+        if end <= m.start():
             continue    # a whole section that merely contains reviews, not one quote
         out.append(html[pos:m.start()])
         pos = max(end, m.end())
     out.append(html[pos:])
     html = "".join(out)
-    return re.sub(r"(?is)<blockquote\b.*?</blockquote>", " ", html)
+    return re.sub(r"(?is)<blockquote\b(?:(?!</?blockquote).){0,8000}</blockquote>", " ", html)
 
 
 _LINE_BREAK = re.compile(
@@ -353,6 +368,8 @@ def _sentences(html: str) -> list[str]:
 
 # ── people on cards and lists ────────────────────────────────────────────
 
+# A line that is a quotation: a testimonial, so the next line is its author.
+_QUOTE_LINE = re.compile(r"^\s*[\"“‘']|[\"”’]\s*$|[★⭐]")
 _SEPARATED = re.compile(r"^(?P<name>[^,|–—\-]{4,45}?)\s*(?:,|\||–|—|\s-\s)\s*(?P<title>.{2,80})$")
 # On one line after a comma, only an unmistakable job title counts: "Tim
 # Brown, proud advocate for the Home Service Industry." is a tagline.
@@ -377,14 +394,13 @@ def people_from_lines(html: str, domain: str = "", site_name: str = "", url: str
     found, seen = [], set()
     for i, line in enumerate(lines):
         candidates = []
+        prev = lines[i - 1] if i else ""
+        if _QUOTE_LINE.search(prev) or re.match(r"^[—–-]\s*\S", line):
+            continue        # a customer quote and its attribution
         name = split_person_name(line)
-        if name:
-            for nxt in lines[i + 1:i + 3]:
-                if split_person_name(nxt) and not _reads_like_title(nxt):
-                    break
-                if _reads_like_title(nxt):
-                    candidates.append((name, nxt, line))
-                    break
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if name and _reads_like_title(nxt) and not nxt.rstrip().endswith(("!", "?")):
+            candidates.append((name, nxt, line))
         m = _SEPARATED.match(line)
         if m and not candidates:
             name2 = split_person_name(m.group("name"))
@@ -496,11 +512,15 @@ _PROSE = (
     (re.compile(rf"(?i:\b(?:founded|started|established|launched|opened|created)\s+(?:in\s+\d{{4}}\s+)?by)\s+"
                 rf"(?:(?i:attorney|dentist|our\s+founder|owner|president)\s+)?{_NAME_RE}"), "Founder"),
     # "owned and operated by Mike Jones"
-    (re.compile(rf"(?i:\b(?:owned\s+and\s+operated|owned|operated|run|led)\s+(?:today\s+)?by)\s+"
+    (re.compile(rf"(?i:\b(?:owned\s+and\s+operated|owned|operated)\s+(?:today\s+)?by)\s+"
                 rf"(?!(?i:president|owner|ceo|founder)\b){_NAME_RE}"), "Owner"),
-    # "second-generation owner Jason Martens", "Led today by President Rami Zarifa"
-    # (no comma: "Founder, Hatch Realty" under a testimonial names a company)
-    (re.compile(rf"(?i:\b{_ADJ}){_OWNER_WORD}\s+{_NAME_RE}"), None),
+    # "with second-generation owner Jason Martens", "Led today by President
+    # Rami Zarifa". The title must follow words that make it this business's
+    # ("our", "by", "with"...): "GAF President Jim Schnepper", "Acme CEO Sarah
+    # Connor" and "President Joe Biden visited" are someone else's. No comma:
+    # "Founder, Hatch Realty" under a testimonial names a company.
+    (re.compile(rf"(?i:\b(?:by|with|as|our|its|current|proud|longtime|(?:second|third|fourth)[- ]generation|"
+                rf"today'?s)\s+{_ADJ}){_OWNER_WORD}\s+{_NAME_RE}"), None),
     # "our founder, Dean Martens"
     (re.compile(rf"(?i:\b(?:our|the\s+company'?s|its)\s+){_OWNER_WORD},\s+{_NAME_RE}"), None),
     # "Jason Martens, owner", "Jack Ellis , founder of Fathom"
@@ -518,6 +538,19 @@ _FIRST_PERSON = re.compile(r"(?i)\bI\s+(?:founded|started|opened|own|established
 _FIRST_NAME_FOUNDER = re.compile(
     rf"\b(?P<first>{_CAP})\s+(?i:co-?founded|founded|started|launched|established|opened)\s+"
     rf"(?P<org>(?:the\s+)?[A-Z][\w&'’.-]*(?:\s+(?:[A-Z][\w&'’.-]*|&))*)")
+
+
+_ROLE_ONLY = re.compile(r"(?i)(?:and\s+)?(?:ceo|cfo|coo|cto|cmo|president|owner|founder|co-?founder|"
+                       r"principal|partner|chief\s+\w+(?:\s+officer)?|general manager)")
+# A person the site remembers rather than employs.
+_DEPARTED = r"(?:passed away|died|retired|was laid to rest|is missed|rest in peace)"
+
+
+def _departed(person: dict, text: str) -> bool:
+    first, last = re.escape(person["first_name"]), re.escape(person["last_name"].split()[-1])
+    return bool(re.search(
+        rf"(?i)(?:\bthe late|in (?:loving )?memory of|remembering)\s+(?:dr\.?\s+)?{first}\b"
+        rf"|\b{first}\b(?:\s+\w+\.?){{0,3}}?(?:\s+{last})?\s*,?[^.]{{0,40}}?\b{_DEPARTED}", text))
 
 
 def _title_word(word: str) -> str:
@@ -559,12 +592,17 @@ def people_from_prose(html: str, domain: str, site_name: str = "", url: str = ""
                     if not names_business(groups["org"], domain, site_name):
                         continue
                 tail = groups.get("tail")
-                if tail is not None:
-                    # "founder of Fathom" is theirs; "founder SignWell" is not.
-                    t = tail.strip()
-                    m_org = re.match(r"^(?:(?:of|at)\s+|@\s*)?((?:the\s+)?[A-Z][\w&'’.-]*(?:\s+[A-Z][\w&'’.-]*)*)", t)
-                    if m_org and not names_business(m_org.group(1), domain, site_name):
-                        continue
+                if tail is None:
+                    # "Principal Mary Jones of Lincoln Elementary"
+                    tail = sentence[m.end():m.end() + 60]
+                    tail = tail if re.match(r"^\s+(?:of|at)\s", tail) else ""
+                # "founder of Fathom" is theirs; "founder SignWell" and
+                # "Owner, Davis Bakery" (a customer's own business) are not.
+                t = tail.strip().lstrip(",;:-–—").strip()
+                m_org = re.match(r"^(?:(?:of|at)\s+|@\s*)?((?:the\s+)?[A-Z][\w&'’.-]*(?:\s+[A-Z][\w&'’.-]*)*)", t)
+                if m_org and not _ROLE_ONLY.fullmatch(m_org.group(1)) \
+                        and not names_business(m_org.group(1), domain, site_name):
+                    continue
                 add(groups["name"], title, sentence)
 
     # "I founded the Higgins Law Firm" on a bio page: the person is the one
@@ -606,11 +644,11 @@ def find_people(pages: list[tuple[str, str]], domain: str, site_name: str = "") 
     """Every person the site names, merged across pages and ranked so the
     likeliest decision maker comes first.
 
-    Sources: cards/lists (profile.detect_people), schema.org, prose. A
-    surname in the business name plus a professional title marks the
-    practice owner ("Dr. Rosenberry Damm" at Rosenberry Family Dental). A
-    founder known only from a history sentence ("Founded by Dean Martens in
-    the 1970s") is dropped when the site also lists a current owner.
+    Sources: cards/lists (profile.detect_people), schema.org, prose. People
+    the site remembers ("the late Harold Smith", "retired in 2010") are
+    dropped, and so is a founder known only from a history sentence
+    ("Founded by Dean Martens in the 1970s") when the site also lists a
+    current owner.
     """
     from harvey.collectors.profile import ProfileCollector
 
@@ -644,18 +682,23 @@ def find_people(pages: list[tuple[str, str]], domain: str, site_name: str = "") 
                         cur[k] = p[k]
                 cur["owner"] = cur["owner"] or p["owner"]
     people = [merged[k] for k in order]
-    for p in people:
-        surnames = " ".join(p.get("full_name", p["last_name"]).split()[1:]) or p["last_name"]
-        if not p["owner"] and surname_on_the_door(surnames, domain, site_name) \
-                and (_PROFESSIONAL.search(p["title"]) or owner_rank(p["title"]) >= 40):
-            p["owner"] = True
+    text = " ".join(" ".join(_sentences(html))[:200_000] for _, html in pages)
+    people = [p for p in people if not _departed(p, text)]
     current_owner = any(p["source"] != "prose" and p["owner"] for p in people)
     if current_owner:
         people = [p for p in people
                   if not (p["source"] == "prose" and p["title"] == "Founder"
                           and re.search(r"(?i)\bfounded\b[^.]*\bby\b|\bour founder\b", p["evidence"]))]
     for p in people:
-        p["rank"] = owner_rank(p["title"], p["owner"]) - (5 if p["source"] == "prose" else 0)
+        # Explicit current owner titles on the business's own cards first;
+        # a surname in the business name only breaks a tie between owners,
+        # it never makes anyone an owner (Linda Smith, Office Manager, at
+        # Smith & Sons is not).
+        surnames = " ".join(p.get("full_name", p["last_name"]).split()[1:]) or p["last_name"]
+        p["rank"] = (owner_rank(p["title"], p["owner"])
+                     + (3 if p["source"] == "card" and is_owner_title(p["title"]) else 0)
+                     + (2 if p["owner"] and surname_on_the_door(surnames, domain, site_name) else 0)
+                     - (5 if p["source"] == "prose" else 0))
     people.sort(key=lambda p: -p["rank"])
     return people
 
@@ -729,18 +772,34 @@ def menu_links(html: str, page_url: str, limit: int = 5) -> list[str]:
 
 # ── addresses on a page ──────────────────────────────────────────────────
 
-EMAIL_RE = re.compile(r"[a-z0-9][a-z0-9._%+\-]*@[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?(?:\.[a-z0-9\-]+)*\.[a-z]{2,}", re.I)
+# Bounded on both sides and anchored at the start of a run, so a page of
+# 1.5MB of hex or dotted text is scanned in linear time.
+EMAIL_RE = re.compile(
+    r"(?<![a-z0-9._%+\-])[a-z0-9][a-z0-9._%+\-]{0,63}@"
+    r"[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?){0,6}\.[a-z]{2,24}"
+    r"(?![a-z0-9\-])", re.I)
 _JUNK_DOMAINS = ("example.com", "example.org", "domain.com", "email.com", "yourdomain.com",
                  "mail.com", "sentry.io", "wixpress.com", "sentry-next.wixpress.com",
                  "yoursite.com", "website.com", "company.com", "test.com")
 _JUNK_TLDS = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".js", ".css")
 # Obfuscations people use to hide an address from scrapers:
 #   name [at] domain [dot] com, name(at)domain.com, name AT domain DOT com
+# "name [at] domain [dot] com", "jim (at) acme (dot) com": only a bracketed
+# "at", never the word in prose ("our office at Main dot Street"), and only
+# a real top-level domain.
 _AT_DOT = re.compile(
-    r"\b([a-z0-9][a-z0-9._%+\-]*)\s*(?:\[\s*at\s*\]|\(\s*at\s*\)|\{\s*at\s*\}|\s+at\s+(?=[a-z0-9\-]+\s*(?:\[|\(|\{)?\s*dot))\s*"
-    r"([a-z0-9\-]+(?:\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|\.|\s+dot\s+)\s*[a-z0-9\-]+)+)", re.I)
-_DATA_PAIR_LOCAL = ("data-front", "data-user", "data-name", "data-local", "data-mailbox", "data-u", "data-prefix")
-_DATA_PAIR_DOMAIN = ("data-back", "data-domain", "data-host", "data-d", "data-suffix", "data-website")
+    r"(?<![a-z0-9._%+\-])([a-z0-9][a-z0-9._%+\-]{0,63})\s{0,3}(?:\[\s{0,3}at\s{0,3}\]|\(\s{0,3}at\s{0,3}\)|\{\s{0,3}at\s{0,3}\})\s{0,3}"
+    r"([a-z0-9\-]{1,63}(?:\s{0,3}(?:\[\s{0,3}dot\s{0,3}\]|\(\s{0,3}dot\s{0,3}\)|\{\s{0,3}dot\s{0,3}\}|\.)\s{0,3}[a-z0-9\-]{1,63}){1,4})", re.I)
+_KNOWN_TLDS = frozenset("""
+com net org edu gov io co us biz info me ca uk au nz ie de fr es it nl be ch at se no dk fi
+pl pt mx br in ai app dev law legal dental agency marketing design studio tech solutions
+services company group pro health care clinic roofing law
+""".split())
+# Recognised obfuscation schemes only: a mailto-ish element carrying a local
+# part and a domain (data-user/data-domain; data-front/data-back, as WordPress
+# team plugins emit). Generic pairs (data-name + data-website) are not emails.
+_DATA_PAIR_LOCAL = ("data-user", "data-front", "data-mailbox")
+_DATA_PAIR_DOMAIN = ("data-domain", "data-back")
 
 
 def _cf_decode(hexstr: str) -> str:
@@ -788,7 +847,12 @@ def emails_on_page(html: str) -> list[str]:
     for hexstr in re.findall(r"(?i)/cdn-cgi/l/email-protection#([0-9a-f]{4,})", html):
         add(_cf_decode(hexstr))
     for tag in re.finditer(r"(?is)<[a-z][^>]*\bdata-[a-z\-]+\s*=[^>]*>", html):
-        attrs = dict((k.lower(), v) for k, v in re.findall(r'(?i)\b(data-[a-z\-]+)\s*=\s*["\']([^"\']*)["\']', tag.group(0)))
+        raw_tag = tag.group(0)
+        mailish = re.match(r"(?i)<a\b", raw_tag) or re.search(
+            r"""(?i)\b(?:class|id|title|aria-label)\s*=\s*["'][^"']*mail""", raw_tag)
+        if not mailish:
+            continue
+        attrs = dict((k.lower(), v) for k, v in re.findall(r'(?i)\b(data-[a-z\-]+)\s*=\s*["\']([^"\']*)["\']', raw_tag))
         local = next((attrs[k] for k in _DATA_PAIR_LOCAL if k in attrs), "")
         domain = next((attrs[k] for k in _DATA_PAIR_DOMAIN if k in attrs), "")
         if local and domain and re.fullmatch(r"[a-z0-9._%+\-]+", local, re.I) \
@@ -799,6 +863,8 @@ def emails_on_page(html: str) -> list[str]:
         add(m.group(0))
     plain = re.sub(r"(?s)<[^>]+>", " ", text)
     for m in _AT_DOT.finditer(plain):
-        domain = re.sub(r"\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\}|\s+dot\s+)\s*", ".", m.group(2), flags=re.I)
-        add(f"{m.group(1)}@{domain.replace(' ', '')}")
+        domain = re.sub(r"\s*(?:\[\s*dot\s*\]|\(\s*dot\s*\)|\{\s*dot\s*\})\s*", ".", m.group(2), flags=re.I)
+        domain = domain.replace(" ", "").lower()
+        if domain.rpartition(".")[2] in _KNOWN_TLDS:
+            add(f"{m.group(1)}@{domain}")
     return found

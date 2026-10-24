@@ -231,13 +231,71 @@ def test_schema_employee_keeps_its_job_title_and_a_blog_author_is_ignored():
     assert [p["title"] for p in found] == ["Founder", "General Manager"]
 
 
-def test_surname_on_the_door_marks_the_practice_owner():
-    pages = [("https://rosenberryfamilydental.com/staff",
-              "<h3>Christie Rosenberry Damm</h3><p>DDS</p><h3>John Smith</h3><p>DDS</p>")]
-    found = people.find_people(pages, "rosenberryfamilydental.com")
-    owners = [(p["first_name"], p["last_name"]) for p in found if p["owner"]]
-    assert owners == [("Christie", "Damm")]
-    assert names(found)[0] == ("Christie", "Damm")
+def test_surname_on_the_door_never_makes_someone_the_owner():
+    # At Smith & Sons, Linda Smith the office manager and Dr. Amy Smith the
+    # associate dentist are family or staff, not owners.
+    pages = [("https://smithandsonsroofing.com/team",
+              "<h3>Linda Smith</h3><p>Office Manager</p>"
+              "<h3>Dr. Amy Smith</h3><p>Associate Dentist</p>"
+              "<h3>Christie Rosenberry Damm</h3><p>DDS</p>")]
+    found = people.find_people(pages, "smithandsonsroofing.com", "Smith & Sons Roofing")
+    assert [p for p in found if p["owner"]] == []
+
+
+def test_surname_on_the_door_breaks_a_tie_between_owners():
+    pages = [("https://smithandsonsroofing.com/team",
+              "<h3>Al Brown</h3><p>Owner</p><h3>Bo Smith</h3><p>Owner</p>")]
+    found = people.find_people(pages, "smithandsonsroofing.com", "Smith & Sons Roofing")
+    assert names(found)[0] == ("Bo", "Smith")
+
+
+SMITH = "smithandsonsroofing.com"
+
+
+@pytest.mark.parametrize("html", [
+    "<p>Smith &amp; Sons was founded in 1952 by the late Harold Smith.</p><p>Today it is run by his grandson.</p>",
+    "<p>Founded by Harold Smith in 1952. Harold passed away in 1998.</p>",
+    "<p>Our founder, Harold Smith, retired in 2010.</p>",
+    "<p>\"Best roofer in town.\"</p><p>Mike Davis, Owner, Davis Bakery</p>",
+    "<div class='slide'><p>“Fantastic work.”</p><p>Mike Davis</p><p>Owner</p></div>",
+    "<div class='gr'><span>Karen White</span><span>Local Guide</span><p>Great owner!</p></div>",
+    "<p>We are proud partners of GAF. Learn more from GAF President Jim Schnepper.</p>",
+    "<p>We worked with Acme CEO Sarah Connor on the new HQ.</p>",
+    "<p>President Joe Biden visited our town.</p>",
+    "<p>Principal Mary Jones of Lincoln Elementary thanks us.</p>",
+    "<p>Our youth league is led by Coach Tim Hart.</p>",
+    "<p>Tom Brown, President of the Denver Roofing Association</p>",
+    "<h3>Harold Smith</h3><p>Former Owner</p>",
+    "<h3>Harold Smith</h3><p>Founder (1952-2001)</p>",
+    "<h3>Harold Smith</h3><p>Retired President</p>",
+    "<h3>Harold Smith</h3><p>Past President</p>",
+    "<h3>In Memory of Harold Smith</h3><p>Founder</p>",
+])
+def test_not_a_current_owner_of_this_business(html):
+    found = people.find_people([(f"https://{SMITH}/about", f"<html><body>{html}</body></html>")],
+                               SMITH, "Smith & Sons Roofing")
+    assert [(p["first_name"], p["last_name"], p["title"]) for p in found if p["owner"]] == []
+
+
+@pytest.mark.parametrize("title", ["Former Owner", "Founder (1952-2001)", "Retired President",
+                                   "Past President", "President Emeritus", "Late Founder"])
+def test_former_owners_are_not_owner_titles(title):
+    assert not people.is_owner_title(title)
+    assert not people.title_matches(title, ["Owner", "President", "Founder"])
+
+
+def test_the_real_president_outranks_false_positives():
+    html = ("<p>“Great job.”</p><p>Mike Davis</p><p>Owner</p>"
+            "<p>Learn more from GAF President Jim Schnepper.</p>"
+            "<h3>Rami Zarifa</h3><p>President</p>")
+    found = people.find_people([(f"https://{SMITH}/about", html)], SMITH)
+    assert names(found)[0] == ("Rami", "Zarifa")
+
+
+def test_owner_from_the_office_of_dr():
+    html = "<p>Welcome to Rosenberry Family Dental, the office of Dr. Christie Rosenberry Damm.</p>"
+    found = people.find_people([("https://rosenberryfamilydental.com", html)], "rosenberryfamilydental.com")
+    assert names(found) == [("Christie", "Damm")] and found[0]["owner"]
 
 
 def test_owners_rank_ahead_of_staff():
@@ -308,6 +366,50 @@ def test_schema_org_email_is_read():
     html = ('<script type="application/ld+json">{"@type": "RoofingContractor", '
             '"email": "admin@txtroofing.com"}</script>')
     assert people.emails_on_page(html) == ["admin@txtroofing.com"]
+
+
+@pytest.mark.parametrize("html", [
+    '<div data-name="Mike" data-website="acme.com"></div>',
+    '<span data-u="tracking" data-d="googletagmanager.com"></span>',
+    '<img data-src="a.png" data-user="x" data-domain="y.com">',
+    "<p>Meet us at our office at Main dot Street</p>",
+    "<p>Call Jim at acme dot com for details</p>",
+    "<p>Reach Sam at 555 dot 1234</p>",
+    "<p>Write to sales [at] acme [dot] notatld</p>",
+])
+def test_no_address_is_invented(html):
+    assert people.emails_on_page(html) == []
+
+
+def test_a_mailto_element_with_user_and_domain_attributes_is_decoded():
+    html = '<a href="#" class="email-link" data-user="jim" data-domain="acme.com">Email</a>'
+    assert people.emails_on_page(html) == ["jim@acme.com"]
+
+
+ADVERSARIAL = {
+    "hex": lambda: "<div data-x='" + "ab12" * 375_000 + "'></div>",     # 1.5MB of hex
+    "dotted": lambda: "<p>" + ".".join(["abc"] * 375_000) + "</p>",
+    "long-run": lambda: "<p>" + "a" * 1_500_000 + "</p>",
+    "at-words": lambda: "<p>" + "a- " * 500_000 + " at </p>",
+}
+
+
+@pytest.mark.parametrize("kind", sorted(ADVERSARIAL))
+def test_address_scan_is_linear_on_adversarial_pages(kind):
+    import time
+    html = ADVERSARIAL[kind]()
+    start = time.monotonic()
+    people.emails_on_page(html)
+    assert time.monotonic() - start < 1.0
+
+
+def test_nested_testimonials_are_bounded():
+    import time
+    html = "<div class='testimonial'>" * 2000 + "x" + "</div>" * 2000
+    start = time.monotonic()
+    people.drop_quoted(html)
+    people.find_people([("https://acme.com", html)], "acme.com")
+    assert time.monotonic() - start < 1.0
 
 
 def test_whole_page_is_scanned_not_just_the_top():

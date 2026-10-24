@@ -68,16 +68,22 @@ MAX_COMPANIES_PER_CYCLE = 10
 
 # Reading a company's site: the homepage, then up to five pages its own menu
 # links to (team, meet-the-doctors, about, contact...), never more than six
-# pages or nine requests per site. The fallback paths are only tried when the
+# pages or ten requests per site. The fallback paths are only tried when the
 # menu offers fewer than two candidates.
 MAX_SITE_PAGES = 6
-MAX_SITE_FETCHES = 9
+# Every request Scout makes for one company — homepage variants, menu pages,
+# inbox pages, the check that a second domain is theirs — shares this cap.
+MAX_SITE_FETCHES = 10
 FALLBACK_SITE_PATHS = ("/about", "/about-us", "/team", "/our-team", "/contact", "/contact-us")
 # Named decision makers taken from one company per visit, likeliest first.
 MAX_CONTACTS_PER_COMPANY = 2
-# A site naming this many people or fewer is a small business: with no
-# evidence of its email format, guess first@ rather than first.last@.
-SMALL_TEAM = 10
+# With no evidence of a company's email format, guess first@ only when
+# something independent of its website says it is small: the ICP's company
+# size, the company's own size on file, or a local-business listing as its
+# source. Otherwise first.last@, and verification decides. (first@ also
+# collides as a company grows: two Johns.)
+SMALL_COMPANY_MAX = 20
+LOCAL_BUSINESS_SOURCES = ("discover:osm", "discover:dataforseo_listings")
 
 # Company-inbox fallback: pages that publish a general address, and the
 # only mailboxes it will use, most likely read by the owner first. An
@@ -241,11 +247,11 @@ class Scout:
         return headers
 
     @staticmethod
-    def _looks_blocked(text: str) -> bool:
+    def _looks_blocked(text: str, status: int = 200) -> bool:
         """A challenge or block page — not a real page that happens to load
         reCAPTCHA for its contact form (which used to read as "blocked" and
         cost Harvey the whole site)."""
-        return looks_like_challenge(text)
+        return looks_like_challenge(text, status)
 
     @staticmethod
     def _host(url_or_domain: str) -> str:
@@ -292,7 +298,7 @@ class Scout:
             if resp is not None:
                 last_status = resp.status_code
                 if resp.status_code in (200, 202, 403, 429, 503) and self._looks_blocked(
-                        getattr(resp, "text", "") or ""):
+                        getattr(resp, "text", "") or "", resp.status_code):
                     # A bot challenge won't clear on retry: note it and stop.
                     self.__dict__.setdefault("_challenged", set()).add(self._host(url))
                     logger.debug(f"Fetch got a bot challenge ({resp.status_code}) for {url[:80]}")
@@ -1138,6 +1144,7 @@ class Scout:
                 verify=True, env=self.env, state=self.state,
                 known_emails=evidence.get("known") or None,
                 default_pattern=evidence.get("default", DEFAULT_PATTERN),
+                other_people=evidence.get("people") or None,
             )
         except Exception as e:
             logger.debug(f"find_email failed for {domain}: {e}")
@@ -1376,12 +1383,14 @@ Respond ONLY with the JSON array."""
         key = self._host(domain)
         if key in cache:
             return cache[key]
-        site = {"base": "", "pages": [], "tried": set(), "challenged": False}
+        site = {"base": "", "pages": [], "tried": set(), "challenged": False, "fetches": 0}
         cache[key] = site
         if self.challenged(key):
             site["challenged"] = True
             return site
         base, home = await self._resolve_base_url(domain)
+        variants = [f"https://{domain}", f"https://www.{domain}", f"http://{domain}", f"http://www.{domain}"]
+        site["fetches"] = variants.index(base) + 1 if base in variants else len(variants)
         if not base or home is None:
             site["challenged"] = self.challenged(key)
             return site
@@ -1396,28 +1405,35 @@ Respond ONLY with the JSON array."""
         links = people_mod.menu_links(home_text, home_url, limit=MAX_SITE_PAGES - 1)
         if len(links) < 2:
             links += [f"{base}{p}" for p in FALLBACK_SITE_PATHS]
-        fetches = 1
         for url in links:
-            if len(site["pages"]) >= MAX_SITE_PAGES or fetches >= MAX_SITE_FETCHES:
+            if len(site["pages"]) >= MAX_SITE_PAGES:
                 break
             if norm(url) in seen:
                 continue
             seen.add(norm(url))
             site["tried"].add(norm(url))
-            fetches += 1
-            resp = await self._fetch(url, timeout=SCRAPE_TIMEOUT, retries=1)
+            resp = await self._site_fetch(site, url)
             if resp is None:
-                if self.challenged(key):
+                if self.challenged(key) or site["fetches"] >= MAX_SITE_FETCHES:
                     break
                 continue
             final = str(getattr(resp, "url", "") or url)
             text = getattr(resp, "text", "") or ""
+            if self._host(final) != key:
+                continue        # redirected to another business (a franchisor's /team)
             if norm(final) in (norm(home_url), norm(base)) or text == home_text:
                 continue        # a menu link that is really the homepage
             if any(norm(final) == norm(u) for u, _ in site["pages"]):
                 continue
             site["pages"].append((final, text))
         return site
+
+    async def _site_fetch(self, site: dict, url: str):
+        """A fetch charged to the company's request budget (MAX_SITE_FETCHES)."""
+        if site.get("fetches", 0) >= MAX_SITE_FETCHES:
+            return None
+        site["fetches"] = site.get("fetches", 0) + 1
+        return await self._fetch(url, timeout=SCRAPE_TIMEOUT, retries=1)
 
     async def _scrape_team_page(self, domain: str) -> list[dict]:
         """The people a company's own site names, likeliest decision maker
@@ -1455,11 +1471,12 @@ Respond ONLY with the JSON array."""
         anyone named on the site), plus the default to guess with when there
         is no evidence at all."""
         key = self._host(domain)
-        known, pattern, confidence = site_email_evidence(
-            addresses, [(p["first_name"], p["last_name"]) for p in found], key)
+        named = [(p["first_name"], p["last_name"]) for p in found]
+        known, pattern, confidence = site_email_evidence(addresses, named, key)
         self.__dict__.setdefault("_site_evidence", {})[key] = {
             "known": known,
-            "default": SMALL_BUSINESS_PATTERN if len(found) <= SMALL_TEAM else DEFAULT_PATTERN,
+            "people": named,
+            "default": SMALL_BUSINESS_PATTERN if await self._known_small(key) else DEFAULT_PATTERN,
         }
         if pattern:
             try:
@@ -1470,6 +1487,30 @@ Respond ONLY with the JSON array."""
                 logger.debug(f"Scout: learned pattern {pattern} for {key} ({confidence:.2f})")
             except Exception as e:
                 logger.debug(f"save_email_pattern failed: {e}")
+
+    async def _known_small(self, domain: str) -> bool:
+        """Is there a size signal independent of the website? The ICP's
+        company size, the company's size on file, or a local-business
+        listing (OpenStreetMap, DataForSEO Business Listings) as its source.
+        Three executives on a homepage say nothing about headcount."""
+        def upper(text: str) -> int | None:
+            nums = [int(n.replace(",", "")) for n in re.findall(r"\d[\d,]*", text or "")]
+            return max(nums) if nums else None
+
+        icp = getattr(getattr(self, "config", None), "icp", None)
+        bound = upper(getattr(icp, "company_size", "") or "")
+        if bound is not None and bound <= SMALL_COMPANY_MAX:
+            return True
+        try:
+            company = await self.state.get_company_by_domain(domain)
+        except Exception:
+            company = None
+        if company is None:
+            return False
+        size = upper(getattr(company, "company_size", "") or "")
+        if size is not None and size <= SMALL_COMPANY_MAX:
+            return True
+        return (getattr(company, "source", "") or "") in LOCAL_BUSINESS_SOURCES
 
     def _people_from_cards(self, pages: list[tuple[str, str]]) -> list[dict]:
         """Fallback: CSS-class team cards (first heading = name). Only names
@@ -1684,7 +1725,7 @@ Respond ONLY with the JSON array."""
                 if people_mod._norm_url(url) in site["tried"]:
                     continue
                 site["tried"].add(people_mod._norm_url(url))
-                resp = await self._fetch(url, timeout=SCRAPE_TIMEOUT, retries=1)
+                resp = await self._site_fetch(site, url)
                 if resp is not None:
                     pages.append((url, getattr(resp, "text", "") or ""))
 
@@ -1713,7 +1754,7 @@ Respond ONLY with the JSON array."""
         cache[other] = False
         if not re.fullmatch(r"[a-z0-9\-]+(?:\.[a-z0-9\-]+)+", other or ""):
             return False
-        resp = await self._fetch(f"https://{other}", timeout=SCRAPE_TIMEOUT, retries=1)
+        resp = await self._site_fetch(site, f"https://{other}")
         if resp is not None:
             landed = self._host(str(getattr(resp, "url", "") or f"https://{other}"))
             cache[other] = landed == self._host(site["base"]) and landed != other

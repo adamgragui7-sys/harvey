@@ -137,7 +137,7 @@ async def test_published_first_name_addresses_set_the_owners_guess(no_network):
         "https://hookagency.com": '<a href="/about-us/">About</a><a href="/contact-us/">Contact</a>',
         "https://hookagency.com/about-us/": HOOK,
         "https://hookagency.com/contact-us/":
-            '<a href="mailto:brynn@hookagency.com">Brynn</a> <a href="mailto:mandie@hookagency.com">M</a>',
+            '<a href="mailto:matt@hookagency.com">Matt Anderson</a> <a href="mailto:brynn@hookagency.com">B</a>',
     }
     scout = site_scout(pages)
     contacts = await scout._contacts_from_company("c1", "hookagency.com", "Hook Agency", "Marketing")
@@ -312,3 +312,73 @@ async def test_profile_collector_reports_a_challenge_without_trying_every_varian
     assert await collector._resolve_site("morneaulaw.com") == ("", "")
     assert calls == ["https://morneaulaw.com"]
     assert "morneaulaw.com" in collector.challenged
+
+
+@pytest.mark.asyncio
+async def test_no_size_signal_keeps_the_first_last_default(no_network):
+    pages = {"https://bigcorp.com": "<h3>John Doe</h3><p>CEO</p>"}
+    scout = site_scout(pages)
+    [p, *_] = await scout._contacts_from_company("c1", "bigcorp.com", "BigCorp", "Software")
+    assert p.email == "john.doe@bigcorp.com"
+
+
+@pytest.mark.asyncio
+async def test_a_small_icp_allows_the_first_name_default(no_network):
+    pages = {"https://acme.com": "<h3>John Doe</h3><p>Owner</p>"}
+    scout = site_scout(pages)
+    scout.config.icp.company_size = "1-10 employees"
+    [p, *_] = await scout._contacts_from_company("c1", "acme.com", "Acme", "Roofing")
+    assert p.email == "john@acme.com"
+
+
+@pytest.mark.asyncio
+async def test_a_local_business_listing_allows_the_first_name_default(no_network):
+    pages = {"https://acme.com": "<h3>John Doe</h3><p>Owner</p>"}
+    scout = site_scout(pages)
+
+    async def company(domain):
+        return SimpleNamespace(id="c1", company_size="", source="discover:osm")
+
+    scout.state.get_company_by_domain = company
+    [p, *_] = await scout._contacts_from_company("c1", "acme.com", "Acme", "Roofing")
+    assert p.email == "john@acme.com"
+
+
+@pytest.mark.asyncio
+async def test_two_people_who_could_share_an_address_get_no_guess(no_network):
+    pages = {"https://acme.com": "<h3>John Smith</h3><p>Owner</p><h3>Jane Smith</h3><p>Owner</p>"
+                                 '<a href="mailto:jsmith@acme.com">Email</a>'}
+    scout = site_scout(pages)
+    contacts = await scout._contacts_from_company("c1", "acme.com", "Acme", "Roofing")
+    named = [p for p in contacts if not p.is_company_inbox]
+    assert [p.email for p in named] == ["", ""]
+
+
+@pytest.mark.asyncio
+async def test_a_menu_link_that_redirects_off_site_is_not_read(no_network):
+    pages = {
+        "https://acme.com": '<a href="/team/">Team</a><a href="/about/">About</a>',
+        "https://acme.com/team/": SimpleNamespace(
+            text="<h3>Franchise Boss</h3><p>CEO</p>", url="https://bigfranchise.com/team/", status_code=200),
+        "https://acme.com/about/": "<p>About us</p>",
+    }
+    scout = site_scout(pages)
+    site = await scout._read_site("acme.com")
+    assert [u for u, _ in site["pages"]] == ["https://acme.com", "https://acme.com/about/"]
+
+
+@pytest.mark.asyncio
+async def test_one_request_budget_covers_everything_scout_fetches_for_a_company(no_network):
+    links = "".join(f'<a href="/team/m{i}/">Team {i}</a>' for i in range(10))
+    pages = {"https://acme.com": links + '<a href="mailto:info@other1.com">x</a><a href="mailto:office@other2.com">y</a>'}
+    scout = site_scout(pages)
+    await scout._contacts_from_company("c1", "acme.com", "Acme", "Roofing")
+    assert len(scout.fetched) <= scout_mod.MAX_SITE_FETCHES
+
+
+@pytest.mark.parametrize("page", [
+    "<html><title>Contact</title><body><form></form><p>This site is protected by reCAPTCHA and the Google Privacy Policy.</p></body></html>",
+    "<html><title>Our Policies</title><body>Unauthorized access denied to staff area.</body></html>",
+])
+def test_ordinary_page_text_is_not_a_challenge(page):
+    assert not Scout._looks_blocked(page)
