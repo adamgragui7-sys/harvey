@@ -1,51 +1,50 @@
 persona:
-  name: "Harvey"
-  company: "Your Company"
-  role: "Business Development"
-  email: "harvey@yourcompany.com"
-  linkedin: "linkedin.com/in/harvey-yourcompany"
+  name: "Gragui Adam"
+  company: "Fangshua Industrial"
+  role: "Sales Reprensitive"
+  email: "adamgragui7@gmail.com"
+  linkedin: ""
   tone: "professional, consultative, confident"
 
 product:
-  name: "Your Product"
-  description: "Describe what your product does and who it's for"
-  pricing: "Starting at $X/mo"
+  name: Electronic Supply 
+  description: "Factory Sales electronic B2B company"
+  pricing: "catalogue available with pricing"
   key_benefits:
-    - "Benefit 1"
-    - "Benefit 2"
-    - "Benefit 3"
+    - "Benefit 1"QUAAITY PREMIUM
+    - "Benefit 2"COMPETITIVE PRICE
+    - "Benefit 3"TREND PRODUCT
   objection_responses:
-    "too expensive": "I understand budget is important. Most of our clients see ROI within 30 days..."
-    "already have a solution": "That makes sense. Curious — what's the one thing you wish it did better?"
-    "not interested": "No worries at all. Mind if I ask what your current approach looks like?"
+    "too expensive": "I totally understand lets me tell you we do offer premium quality to unsure there is no after sales problem plus we do offer a competitive price "
+    "already have a solution": "get more customer to sell more ouur product"
+    "not interested": "no worries actually lets make things well i offer you a competitive price that lets you get a benefit of selling our product plus the quality we insure it for you dont miss this deals its a good opportunity to build a long term with your customer and increase more customers"
   offer:
-    primary: ""                    # Main offer (e.g., "Monthly subscription starting at $99/mo")
-    entry: ""                      # Low-commitment entry (e.g., "14-day free trial", "Free audit")
-    goal: "book_call"              # Goal of outreach: book_call, start_trial, get_reply
-    booking_method: "calendar_link" # calendar_link, suggest_times, ask_preference
-    booking_url: ""                # Calendar link URL (if using calendar_link method)
-    meeting_duration: "15 minutes" # How long the call is
-    meeting_owner: ""              # Who takes the meeting (name or role)
+    primary: ""                    # we do sells product through our catalogue 
+    entry: ""                      # we can show you real pictures and video and even video call to built a trust 
+    goal: "book_call"              # our goal is satisfy our customer wee can book a video call to communicate more and we do sell Samples
+    booking_method: "calendar_link" # preference in term of customer availabality 
+    booking_url: ""                # not for the moment
+    meeting_duration: "15 minutes" # How long the call is 30 minute
+    meeting_owner: ""              # Gragui Adam
 
 icp:
   industries:
-    - "SaaS"
-    - "Marketing Agency"
+    -B2B company 
+    - Supply Chain 
   company_size: "10-200 employees"
   titles:
-    - "VP Marketing"
+    - "VIP Sourcing"
     - "Head of Growth"
     - "CMO"
     - "Director of Marketing"
   geography:
-    - "United States"
-  # Roles that signal a company is in-market RIGHT NOW (a company hiring a
+    - "United States""Europe""Africa"Australia"Canada"UAE"Saudia Arabic"
+  # Roles in our company is international sales 
   # "Head of Growth" is shopping for growth tooling). Used for careers-page
-  # scanning and job-board discovery. Empty = fall back to titles above.
   hiring_signals: []
 
 channels:
-  email:
+  email: adamgragui7@gmail.com
     enabled: true
     provider: "gmail"          # gmail (recommended) | microsoft | smtp | instantly
     max_daily_sends: 50
@@ -64,8 +63,8 @@ channels:
     # Connect it (`harvey trulyinbox connect`) and `harvey warmup` reads
     # whether this mailbox is actually warmed.
     warmup:
-      start_date: ""            # YYYY-MM-DD; blank = no ramp
-      min_days: 14
+      start_date: 27/10/2026           # YYYY-MM-DD; blank = no ramp
+      min_days: 30
       start_sends: 5
       daily_increase: 3
       dkim_selector: ""         # only if your provider uses an unusual one
@@ -82,8 +81,8 @@ channels:
     #   recipient_timezone: true  # false: one zone for everyone (quiet_hours.timezone)
   linkedin:
     enabled: false             # explicit opt-in; credentials alone do not enable it
-    max_daily_connections: 20
-    max_daily_messages: 10
+    max_daily_connections: 50
+    max_daily_messages: 50
 
 usage:
   max_daily_claude_percent: 80
@@ -102,11 +101,11 @@ usage:
 # your prospects are in one country, set prospect_country: Precleared uses it
 # only when it can't tell the country from the address, company records or the
 # company's website.
-compliance:
+compliance:https://fangshuosy.m.en.alibaba.com/?spm=a2700.details.0.0.44e82ee6Ced23H&wx_navbar_transparent=true&wx_screen_direc=portrait&productId=1601942546014&from=detail_company_card
   # Added under every cold email (never replies). US law (CAN-SPAM) requires a
   # postal address you receive mail at: a street address, PO box or virtual
   # mailbox. Until it's set, cold email still sends, with a warning.
-  postal_address: ""
+  postal_address: 4E, Block A, Times Center, No. 102Center Road, Xingiao Sub-district,Bao'an District, Shenzhen,Guangdong Province
   # Keep wording Harvey recognises as an opt-out ("no thanks", "unsubscribe").
   opt_out_line: 'Not interested? Reply "no thanks" and I won''t email again.'
   # Never email these, cold or in reply: competitors, your existing customers,
@@ -116,7 +115,7 @@ compliance:
   # for an email you already approved in the Outbox, and picked up by a running
   # Harvey at once. If you trained Harvey, set it in harvey.local.yaml instead:
   # that file wins.
-  do_not_contact: []
+  contact them: 
   #   - "competitor.example"
   #   - "jane@acme.example"
   precleared:
